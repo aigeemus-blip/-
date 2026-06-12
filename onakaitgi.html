@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>3D スカイダイブ・ダッシュ</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; touch-action: none; background: #000; font-family: sans-serif; }
+  #ui { position: fixed; top: 0; left: 0; width: 100%; padding: 16px; color: #fff; pointer-events: none; z-index: 10; }
+  #score { font-size: 28px; font-weight: bold; text-shadow: 0 2px 6px rgba(0,0,0,0.6); }
+  #speed { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+  #overlay { position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; color: #fff; z-index: 20;
+    background: rgba(0,0,0,0.55); text-align: center; padding: 24px; }
+  #overlay h1 { font-size: 32px; margin-bottom: 12px; }
+  #overlay p { font-size: 16px; opacity: 0.9; margin-bottom: 24px; line-height: 1.6; }
+  #btn { pointer-events: auto; padding: 16px 40px; font-size: 20px; font-weight: bold;
+    border: none; border-radius: 999px; background: #00d4ff; color: #003; cursor: pointer;
+    box-shadow: 0 6px 20px rgba(0,212,255,0.5); }
+  #btn:active { transform: scale(0.96); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="score">0</div>
+  <div id="speed">リングをくぐってスコアアップ！</div>
+</div>
+<div id="overlay">
+  <h1>🪂 スカイダイブ・ダッシュ</h1>
+  <p>画面をスワイプ（またはマウス移動）で左右上下に移動。<br>
+     光るリングをくぐってスコアを稼ごう！<br>
+     落ちてくる障害物にぶつかると減速するよ。</p>
+  <button id="btn">スタート</button>
+</div>
+
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x87ceeb, 40, 220);
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 500);
+camera.position.set(0, 0, 8);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+// ライト
+scene.add(new THREE.HemisphereLight(0xffffff, 0x446688, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+sun.position.set(5, 10, 7);
+scene.add(sun);
+
+// グラデーション空っぽい背景色
+renderer.setClearColor(0x87ceeb);
+
+// プレイヤー（落下しているキャラの代わりの球＋トレイル風の体）
+const player = new THREE.Group();
+const body = new THREE.Mesh(
+  new THREE.SphereGeometry(0.7, 24, 24),
+  new THREE.MeshStandardMaterial({ color: 0xff5577, roughness: 0.3, metalness: 0.2 })
+);
+player.add(body);
+// 小さな羽（パラシュート風）
+const wing = new THREE.Mesh(
+  new THREE.ConeGeometry(1.4, 1.0, 16, 1, true),
+  new THREE.MeshStandardMaterial({ color: 0x00d4ff, side: THREE.DoubleSide, roughness: 0.4 })
+);
+wing.position.y = 1.4;
+wing.rotation.x = Math.PI;
+player.add(wing);
+scene.add(player);
+
+// 雲（ただの装飾）
+const clouds = [];
+for (let i = 0; i < 30; i++) {
+  const c = new THREE.Mesh(
+    new THREE.SphereGeometry(2 + Math.random()*3, 8, 8),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, transparent: true, opacity: 0.85 })
+  );
+  c.position.set((Math.random()-0.5)*120, (Math.random()-0.5)*40, -Math.random()*400);
+  c.scale.y = 0.5;
+  scene.add(c);
+  clouds.push(c);
+}
+
+// リングと障害物の管理
+const rings = [];
+const rocks = [];
+const ringGeo = new THREE.TorusGeometry(3, 0.4, 12, 32);
+const rockGeo = new THREE.IcosahedronGeometry(1.6, 0);
+
+function spawnRing(z) {
+  const m = new THREE.Mesh(ringGeo, new THREE.MeshStandardMaterial({
+    color: 0xffee44, emissive: 0xffaa00, emissiveIntensity: 0.6, roughness: 0.3 }));
+  m.position.set((Math.random()-0.5)*22, (Math.random()-0.5)*16, z);
+  m.userData.passed = false;
+  scene.add(m); rings.push(m);
+}
+function spawnRock(z) {
+  const m = new THREE.Mesh(rockGeo, new THREE.MeshStandardMaterial({
+    color: 0x665544, roughness: 0.9 }));
+  m.position.set((Math.random()-0.5)*26, (Math.random()-0.5)*18, z);
+  m.userData.rot = new THREE.Vector3(Math.random(), Math.random(), Math.random()).multiplyScalar(0.03);
+  scene.add(m); rocks.push(m);
+}
+
+for (let i = 0; i < 12; i++) { spawnRing(-30 - i*22); }
+for (let i = 0; i < 10; i++) { spawnRock(-40 - i*30); }
+
+// 入力（タッチ＆マウス）
+let targetX = 0, targetY = 0;
+let dragging = false, lastX = 0, lastY = 0;
+
+function pointerStart(x, y) { dragging = true; lastX = x; lastY = y; }
+function pointerMove(x, y) {
+  if (!dragging) return;
+  targetX += (x - lastX) * 0.03;
+  targetY -= (y - lastY) * 0.03;
+  targetX = Math.max(-12, Math.min(12, targetX));
+  targetY = Math.max(-9, Math.min(9, targetY));
+  lastX = x; lastY = y;
+}
+function pointerEnd() { dragging = false; }
+
+renderer.domElement.addEventListener('touchstart', e => { const t = e.touches[0]; pointerStart(t.clientX, t.clientY); }, {passive:true});
+renderer.domElement.addEventListener('touchmove', e => { const t = e.touches[0]; pointerMove(t.clientX, t.clientY); }, {passive:true});
+renderer.domElement.addEventListener('touchend', pointerEnd);
+renderer.domElement.addEventListener('mousedown', e => pointerStart(e.clientX, e.clientY));
+renderer.domElement.addEventListener('mousemove', e => pointerMove(e.clientX, e.clientY));
+renderer.domElement.addEventListener('mouseup', pointerEnd);
+
+// ゲーム状態
+let score = 0, speed = 0.6, running = false;
+const scoreEl = document.getElementById('score');
+const speedEl = document.getElementById('speed');
+const overlay = document.getElementById('overlay');
+
+document.getElementById('btn').addEventListener('click', () => {
+  overlay.classList.add('hidden');
+  running = true;
+  score = 0; speed = 0.6; targetX = 0; targetY = 0;
+});
+
+const clock = new THREE.Clock();
+
+function loop() {
+  requestAnimationFrame(loop);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  // プレイヤーをターゲット位置へ滑らかに移動
+  player.position.x += (targetX - player.position.x) * 0.15;
+  player.position.y += (targetY - player.position.y) * 0.15;
+  player.rotation.z = (targetX - player.position.x) * -0.08;
+  body.position.y = Math.sin(t*3)*0.08;
+
+  if (running) {
+    score += dt * speed * 12;
+    scoreEl.textContent = Math.floor(score);
+    speed = Math.min(2.0, 0.6 + score * 0.0008);
+    speedEl.textContent = '速度 ' + speed.toFixed(2) + 'x';
+  }
+
+  const move = running ? speed * 60 * dt : 8 * dt;
+
+  // リング処理
+  for (const r of rings) {
+    r.position.z += move;
+    r.rotation.z += 0.01;
+    if (running && !r.userData.passed && r.position.z > player.position.z - 1 && r.position.z < player.position.z + 1) {
+      const dx = r.position.x - player.position.x;
+      const dy = r.position.y - player.position.y;
+      if (Math.sqrt(dx*dx + dy*dy) < 3) {
+        r.userData.passed = true;
+        score += 50;
+        r.material.emissive.setHex(0x44ff66);
+      }
+    }
+    if (r.position.z > 15) {
+      r.position.z = -250 - Math.random()*30;
+      r.position.x = (Math.random()-0.5)*22;
+      r.position.y = (Math.random()-0.5)*16;
+      r.userData.passed = false;
+      r.material.emissive.setHex(0xffaa00);
+    }
+  }
+
+  // 障害物処理
+  for (const k of rocks) {
+    k.position.z += move;
+    k.rotation.x += k.userData.rot.x;
+    k.rotation.y += k.userData.rot.y;
+    if (running && k.position.z > player.position.z - 1.5 && k.position.z < player.position.z + 1.5) {
+      const dx = k.position.x - player.position.x;
+      const dy = k.position.y - player.position.y;
+      if (Math.sqrt(dx*dx + dy*dy) < 2.2) {
+        speed = Math.max(0.4, speed * 0.6);
+        k.position.z = -250;
+        body.material.color.setHex(0xffffff);
+        setTimeout(() => body.material.color.setHex(0xff5577), 120);
+      }
+    }
+    if (k.position.z > 15) {
+      k.position.z = -250 - Math.random()*40;
+      k.position.x = (Math.random()-0.5)*26;
+      k.position.y = (Math.random()-0.5)*18;
+    }
+  }
+
+  // 雲を流す
+  for (const c of clouds) {
+    c.position.z += move * 0.5;
+    if (c.position.z > 30) c.position.z = -400;
+  }
+
+  renderer.render(scene, camera);
+}
+loop();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
